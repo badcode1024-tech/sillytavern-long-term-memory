@@ -1,5 +1,5 @@
 // =============================================================
-// index.js — 长期记忆插件（纯前端 SillyTavern 插件，单文件版）
+// index.js — 记忆宫殿 Memory Palace 插件（纯前端 SillyTavern 插件，单文件版）
 //
 // 架构：纯前端方案，无外部后端、无 mem0ai 依赖。
 // 数据通过 getContext().extensionSettings 持久化到服务端 data/ 目录，
@@ -17,8 +17,10 @@
 (function (global) {
     'use strict';
 
-    // 插件唯一 ID
-    const PLUGIN_ID = 'long-term-memory';
+    // 插件唯一 ID（记忆宫殿）
+    const PLUGIN_ID = 'memory-palace';
+    // 旧版插件 ID，用于数据迁移：读取旧数据时兼容，避免改名后记忆丢失。
+    const LEGACY_PLUGIN_ID = 'long-term-memory';
 
     // ---------------------------------------------------------------------
     // 兼容层：获取 SillyTavern 上下文。不同版本/加载方式下，
@@ -57,35 +59,94 @@
         todoCheckInterval: 10,
         npcMinMentions: 3,
         debug: false,
+        // 独立 API（可选，用于单独做总结；留空则复用酒馆主模型）
+        externalApiEnabled: false,
+        externalApiUrl: '',
+        externalApiKey: '',
+        externalApiModel: '',
+        // 分批次总结：每批最大楼层数
+        batchSize: 25,
     };
 
     // ---------------------------------------------------------------------
     // 默认 Prompt 定义（用户可通过面板覆盖）
     // ---------------------------------------------------------------------
     const DEFAULT_PROMPTS = {
+        // 一次性大总结：暂停剧情，总结全部内容，输出结构化 JSON
+        summarize_all: {
+            name: '大总结',
+            system: `请暂停剧情，开始对以下对话内容进行完整的长期记忆总结。你是「{{char}}」的记忆整理助手，
+需要把对话里所有值得记住的信息，分门别类整理成结构化的 JSON。
+
+【总结内容与格式】严格按下面的 JSON 结构输出（不要输出 JSON 以外的任何文字）：
+
+{
+  "key_events": [
+    {
+      "content": "发生的关键事件描述（一句话，具体、完整）",
+      "keywords": ["事件锚点关键词1", "关键词2", "关键词3"],
+      "emotions": ["情绪分类1", "情绪分类2"]
+    }
+  ],
+  "diary": [
+    {
+      "date": "具体日期（如 4.19 或 4月19日；若对话中无明确日期则用相对时间如「第二天」）",
+      "content": "以「{{char}}」口吻、不带个人情绪地流水账式记录这一两天发生的事，一两句话"
+    }
+  ],
+  "emotion_flow": [
+    {
+      "date": "这一阶段覆盖的具体日期区间，格式为「YYYY.M.D-YYYY.M.D」（如 2036.4.1-2036.4.19；若对话中无明确年月日，则用相对时间区间如「第一天-第三天」）",
+      "content": "这一阶段「{{char}}」对 user 的情感变化总结（因为哪些事、态度有了什么变化、现在对 user 的看法）",
+      "affection": "当前好感度估值（如 10%-20%，或从 25% 降至 18% 之类的变化描述）",
+      "relationship": "「{{char}}」认为自己现在和 user 是什么关系（如：恋人、挚友、师徒、宿敌、陌生人等，一句话概括）"
+    }
+  ],
+  "special_occasions": ["提到的纪念日/生日/重要日期"],
+  "todos": [{"content": "约定/承诺/待办内容", "done": false}],
+  "important_items": [{"name": "物品名", "significance": "意义"}],
+  "npc": [
+    {"name": "NPC名字", "identity": "NPC的身份/与主角的关系", "brief": "关于这个NPC的一句话简略记忆（关键事实，越简略越好）"}
+  ]
+}
+
+【严格规则】
+1. 只输出一个合法 JSON 对象，不要输出解释、代码块标记或注释。
+2. key_events 是记忆的核心：每条事件必须独立、完整、可单独理解；keywords 是 1-3 个能触发回忆的锚点词（人名/地名/物品/关键动作等），emotions 是这条事件对应的情绪分类词。
+3. 【关键词格式铁律】keywords 里的每一个词必须「极简」：英文只能是一个单词，中文只能是一个 2 字或 3 字的词语。严禁输出长短语、整句话、或 4 字以上的词组。例如：正确「戒指」「告白」「生日」「猫」；错误「一起去海边看日出」「她喜欢的那家咖啡店」。
+4. diary 是带日期的流水账，客观记录事实，不抒发个人情绪。date 用「几月几日」格式（如 4.19、4月19日），方便作为纪念日关键词触发。
+5. emotion_flow 是这一阶段的情感变化总结，必须包含具体日期区间 date、好感度百分比 affection，以及 relationship（char 认为自己现在和 user 的关系）。
+6. npc 是对话中出现的其他角色：name 是名字，identity 是身份（如「掌柜」「师姐」「仇人」），brief 是极简略的一句话记忆。NPC 记忆务必简略，不需要像主要角色那么细致。
+7. todos 里，对话中已经明确「做完、完成、兑现、取消」的约定/承诺，done 必须填 true；只有仍未完成的才填 false。同一个约定若在多段对话里反复出现，只输出一次，且按最新状态判断 done。
+8. important_items 中，同一个物品（名称一致）只能出现一次，不要因为多次提及就重复输出；只有在出现真正重要的物品时才填写，没有就输出空数组。
+9. 没有内容的分区输出空数组 []，严禁虚构、推测、补充不存在的信息。
+
+【待总结对话】
+{{chunk}}`,
+            user: '请开始总结。',
+        },
+        // 旧版单楼层提取（保留兼容，但默认流程不再每层调用）
         extract_facts: {
-            name: '总库提炼',
+            name: '单段提炼（兼容）',
             system: `你是「{{char}}」的长期记忆提取器。请从下面的对话片段中，提取出值得长期记住的关键信息，
 并严格按 JSON 结构归类输出。只提取明确出现、值得保留的事实，不要臆测、不要编造。
 
 【分区定义】
-- emotional_tags: 「{{char}}」当前表现出的情绪标签（如"开心""烦躁""害羞"），用简短词概括。
-- key_events: 对话中发生的关键事件、重要剧情节点、角色间的约定事实。
-- special_occasions: 提到的特殊节日、纪念日、生日、重要日期（含日期信息）。
-- character_diary: 「{{char}}」视角的日记式心路历程、内心独白。
-- emotion_flow: 「{{char}}」情绪的变化流转（如"从警惕变为信任"）。
-- todos: 「{{char}}」或用户明确做出的待办、约定、承诺（含是否已完成的判断）。
-- important_items: 出现的重要物品/道具，格式为 {name, significance}（物品名 + 代表的意义/剧情）。
-- npc: 对话中出现的其他角色（非 {{char}}），提取其名字和关键特征。
+- emotional_tags: 「{{char}}」当前表现出的情绪标签。
+- key_events: 对话中发生的关键事件、重要剧情节点。
+- special_occasions: 提到的特殊节日、纪念日、生日。
+- character_diary: 「{{char}}」视角的日记式记录。
+- emotion_flow: 「{{char}}」情绪的变化流转。
+- todos: 待办、约定、承诺。
+- important_items: 重要物品，格式 {name, significance}。
+- npc: 其他角色名字。
 
 【严格规则】
-1. 只输出一个合法的 JSON 对象，不要输出任何 JSON 以外的文字、解释、代码块标记或注释。
-2. 如果某个分区没有可提取的内容，对应字段输出空数组 []（character_diary 输出空字符串 ""）。
-3. 所有提取内容必须直接来源于对话原文，严禁虚构、推测或补充不存在的信息。
-4. 情绪标签用 1-3 个简短中文词，不要输出长句。
-5. important_items 的 significance 用一句话概括该物品在剧情中的意义。
+1. 只输出一个合法 JSON 对象，不要输出任何 JSON 以外的文字。
+2. 没有内容的分区输出空数组 []。
+3. 严禁虚构。
 
-【输出格式】严格输出如下 JSON（不要输出任何 JSON 以外的文字）：
+【输出格式】
 {{json_schema}}
 
 【待处理对话】
@@ -93,7 +154,7 @@
             user: '请执行提取。',
         },
         summarize_floors: {
-            name: '楼层滚动总结',
+            name: '楼层滚动总结（兼容）',
             system: `你是「{{char}}」的记忆整理助手。下面是最近一段时间里滚出上下文的旧对话内容。
 请把这些内容浓缩成一段简洁、信息密度高的结构化摘要，保留所有关键事实、情感变化、
 约定和重要物品，删除寒暄和冗余。
@@ -104,26 +165,6 @@
 【要求】用中文输出，控制在 300 字以内，按时间顺序概括。`,
             user: '请总结。',
         },
-        diary_entry: {
-            name: '日记本总结',
-            system: `你是「{{char}}」。请以第一人称视角，把下面这段对话写成一篇简短的角色日记，
-记录你的所见、所感、所思。语气要贴合「{{char}}」的人设。
-
-【对话内容】
-{{chunk}}
-
-【要求】80-150 字，第一人称，情感真挚。`,
-            user: '请写日记。',
-        },
-        emotion_tag: {
-            name: '情绪标签判定',
-            system: `请判断「{{char}}」在下面这段话中表现出的情绪状态，用 1-3 个简短的情绪词概括
-（例如：开心、焦虑、警惕、温柔、愤怒、害羞、期待）。只输出情绪词，用逗号分隔，不要输出其他内容。
-
-【对话内容】
-{{chunk}}`,
-            user: '判断情绪。',
-        },
         todo_extract: {
             name: '待办事项提取',
             system: `请从下面对话中提取「{{char}}」或用户明确做出的约定、承诺、待办事项。
@@ -133,20 +174,13 @@
 【严格规则】
 1. 只输出 JSON 数组，不要输出任何 JSON 以外的文字或解释。
 2. 只提取明确说出口的约定/承诺/待办，不要凭空猜测。
-3. content 要完整、具体，保留约定的关键信息（对象、时间、条件等）。
+3. content 要完整、具体。
+4. 已经明确「做完、完成、兑现、取消」的约定，done 填 true；只有仍未完成的才填 false。
+5. 同一个约定不要重复输出多次，只输出一次，并按最新状态判断 done。
 
 【对话内容】
 {{chunk}}`,
             user: '提取待办。',
-        },
-        npc_recognize: {
-            name: 'NPC 识别',
-            system: `请识别下面对话中出现的、除了「{{char}}」之外的其他具名角色（NPC）。
-只输出这些人名，用逗号分隔，不要输出其他内容。如果没有任何其他角色，输出空字符串。
-
-【对话内容】
-{{chunk}}`,
-            user: '识别 NPC。',
         },
     };
 
@@ -203,25 +237,39 @@
     function getDatabase() {
         const s = extSettings();
         if (!s[PLUGIN_ID]) s[PLUGIN_ID] = {};
+        // 数据迁移：改名后首次访问时，把旧插件 ID 下的数据搬到新 ID，避免记忆丢失。
+        if (s[LEGACY_PLUGIN_ID] && !s[PLUGIN_ID].database && s[LEGACY_PLUGIN_ID].database) {
+            s[PLUGIN_ID].database = s[LEGACY_PLUGIN_ID].database;
+            if (s[LEGACY_PLUGIN_ID].settings && !s[PLUGIN_ID].settings) {
+                s[PLUGIN_ID].settings = s[LEGACY_PLUGIN_ID].settings;
+            }
+            if (s[LEGACY_PLUGIN_ID].prompts && !s[PLUGIN_ID].prompts) {
+                s[PLUGIN_ID].prompts = s[LEGACY_PLUGIN_ID].prompts;
+            }
+            delete s[LEGACY_PLUGIN_ID];
+            saveSettings();
+        }
         if (!s[PLUGIN_ID].database) s[PLUGIN_ID].database = {};
         return s[PLUGIN_ID].database;
     }
 
     function createEmptyMemory() {
         return {
-            emotional_tags: [],
-            key_events: [],
-            special_occasions: [],
-            character_diary: [],
-            emotion_flow: [],
-            todos: [],
-            important_items: [],
+            emotional_tags: [],     // 保留：全局情绪标签池（可选）
+            key_events: [],         // 关键事件：[{content, keywords:[], emotions:[]}]
+            special_occasions: [],  // 纪念日：[string]
+            character_diary: [],    // 日记：[{date, content}]
+            emotion_flow: [],       // 情感流转：[{content, affection}]
+            todos: [],              // 待办：[{content, done}]
+            important_items: [],    // 重要物品：[{name, significance}]
             npcs: {},
             meta: {
                 created_at: Date.now(),
                 updated_at: Date.now(),
                 pendingFloors: 0,
                 todoCounter: 0,
+                lastSummarizedFloor: 0,   // 上次总结到的楼层索引
+                pendingFlowInjection: false, // 大总结后下一轮注入情感流转一次
             },
         };
     }
@@ -250,6 +298,81 @@
             mem[partition].push(...item);
         } else {
             mem[partition].push(item);
+        }
+        getCharacterMemory(agentId).meta.updated_at = Date.now();
+        saveSettings();
+    }
+
+    // 归一化字符串用于去重比较（去空白、小写）
+    function normalizeStr(s) {
+        return String(s ?? '').replace(/\s+/g, '').toLowerCase();
+    }
+
+    // 重要物品去重：按 name 归一化后比较，已存在则合并/跳过
+    function mergeImportantItems(agentId, items, npcName = null) {
+        const mem = npcName
+            ? getCharacterMemory(agentId).npcs[npcName]
+            : getCharacterMemory(agentId);
+        if (!mem) return;
+        if (!Array.isArray(mem.important_items)) mem.important_items = [];
+
+        for (const raw of items) {
+            const name = typeof raw === 'string' ? raw : (raw?.name || '');
+            const significance = typeof raw === 'object' ? (raw.significance || '') : '';
+            if (!name || !String(name).trim()) continue;
+
+            const key = normalizeStr(name);
+            const existing = mem.important_items.find((it) => {
+                const n = typeof it === 'string' ? it : it?.name;
+                return normalizeStr(n) === key;
+            });
+            if (existing) {
+                // 已存在：若旧条目缺 significance，则补上
+                if (typeof existing === 'object' && !existing.significance && significance) {
+                    existing.significance = significance;
+                }
+                continue;
+            }
+            mem.important_items.push(
+                typeof raw === 'string'
+                    ? raw
+                    : { name: String(name).trim(), significance: significance || '' }
+            );
+        }
+        getCharacterMemory(agentId).meta.updated_at = Date.now();
+        saveSettings();
+    }
+
+    // 待办去重 + 完成态合并：按 content 归一化去重；已存在的待办若新结果标记 done，则更新为完成
+    function mergeTodos(agentId, items, npcName = null) {
+        const mem = npcName
+            ? getCharacterMemory(agentId).npcs[npcName]
+            : getCharacterMemory(agentId);
+        if (!mem) return;
+        if (!Array.isArray(mem.todos)) mem.todos = [];
+
+        for (const raw of items) {
+            const content = typeof raw === 'string' ? raw : (raw?.content || '');
+            const done = typeof raw === 'object' ? !!raw.done : false;
+            if (!content || !String(content).trim()) continue;
+
+            const key = normalizeStr(content);
+            const existing = mem.todos.find((t) => {
+                const c = typeof t === 'string' ? t : t?.content;
+                return normalizeStr(c) === key;
+            });
+            if (existing) {
+                // 已存在：若新结果标记为已完成，则更新为完成（完成态只进不退）
+                if (done && typeof existing === 'object') {
+                    existing.done = true;
+                }
+                continue;
+            }
+            mem.todos.push(
+                typeof raw === 'string'
+                    ? raw
+                    : { content: String(content).trim(), done: done }
+            );
         }
         getCharacterMemory(agentId).meta.updated_at = Date.now();
         saveSettings();
@@ -311,12 +434,17 @@
         return true;
     }
 
-    function ensureNpcMemory(agentId, npcName) {
+    function ensureNpcMemory(agentId, npcName, identity = '') {
         const mem = getCharacterMemory(agentId);
         if (!mem.npcs[npcName]) {
             mem.npcs[npcName] = createEmptyMemory();
             mem.npcs[npcName].meta.is_npc = true;
             mem.npcs[npcName].meta.name = npcName;
+            mem.npcs[npcName].meta.identity = identity || '';
+            saveSettings();
+        } else if (identity && !mem.npcs[npcName].meta.identity) {
+            // 补充身份信息
+            mem.npcs[npcName].meta.identity = identity;
             saveSettings();
         }
         return mem.npcs[npcName];
@@ -463,6 +591,114 @@
         return '';
     }
 
+    // 独立 API 生成（可选）：用户配置外部 API 后，总结改走外部接口
+    async function generateViaExternalApi(prompt, systemPrompt = null) {
+        const settings = getSettings();
+        const url = (settings.externalApiUrl || '').trim();
+        const key = (settings.externalApiKey || '').trim();
+        const model = (settings.externalApiModel || '').trim();
+
+        if (!url) {
+            throw new Error('未配置外部 API 地址');
+        }
+
+        const merged = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
+
+        const body = {
+            messages: [
+                { role: 'user', content: merged },
+            ],
+        };
+        // 只有填了 model 才带 model 字段（有些网关不填 model 也能跑）
+        if (model) body.model = model;
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (key) headers['Authorization'] = `Bearer ${key}`;
+
+        let resp;
+        try {
+            resp = await fetch(url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body),
+            });
+        } catch (e) {
+            // 网络层错误（地址不通、CORS、域名解析失败等）
+            throw new Error(`无法连接外部 API（${e?.message || '网络错误'}）。请检查地址是否可访问、是否需走代理。`);
+        }
+
+        if (!resp.ok) {
+            // 尽量提取 API 返回的错误详情，方便定位
+            let detail = '';
+            try {
+                const errData = await resp.json();
+                detail = errData?.error?.message || errData?.message || errData?.error || '';
+            } catch (_) { /* 忽略 */ }
+            throw new Error(`外部 API 请求失败：HTTP ${resp.status}${detail ? ' — ' + detail : ''}`);
+        }
+
+        const data = await resp.json();
+        // 兼容 OpenAI 格式与 Anthropic 格式
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+            return data.choices[0].message.content || '';
+        }
+        if (data.content && Array.isArray(data.content)) {
+            const textParts = data.content.filter((c) => c.type === 'text').map((c) => c.text);
+            return textParts.join('\n') || '';
+        }
+        if (typeof data.content === 'string') {
+            return data.content;
+        }
+        return '';
+    }
+
+    // 生成入口：优先外部 API，否则酒馆主模型
+    async function generateSmart(prompt, systemPrompt = null) {
+        const settings = getSettings();
+        if (settings.externalApiEnabled && settings.externalApiUrl) {
+            return await generateViaExternalApi(prompt, systemPrompt);
+        }
+        return await generateQuiet(prompt, systemPrompt);
+    }
+
+    // 拉取外部 API 的可用模型列表（OpenAI 兼容 /models 接口）
+    async function fetchExternalModels() {
+        const settings = getSettings();
+        const url = settings.externalApiUrl;
+        const key = settings.externalApiKey;
+
+        if (!url) {
+            toastr?.error?.('记忆宫殿：请先填写 API 地址');
+            return null;
+        }
+
+        // 从 chat/completions 地址推断 base URL
+        let baseUrl = url;
+        baseUrl = baseUrl.replace(/\/chat\/completions\/?$/, '');
+        baseUrl = baseUrl.replace(/\/completions\/?$/, '');
+        baseUrl = baseUrl.replace(/\/+$/, '');
+
+        const modelsUrl = `${baseUrl}/models`;
+        const headers = {};
+        if (key) headers['Authorization'] = `Bearer ${key}`;
+
+        try {
+            const resp = await fetch(modelsUrl, { method: 'GET', headers });
+            if (!resp.ok) {
+                throw new Error(`HTTP ${resp.status}`);
+            }
+            const data = await resp.json();
+            const models = (data.data || [])
+                .map((m) => m.id || m.name)
+                .filter(Boolean)
+                .sort();
+            return models;
+        } catch (err) {
+            console.warn('[记忆宫殿] 拉取模型失败：', err);
+            throw err;
+        }
+    }
+
     function parseJsonFromText(text) {
         if (!text) return null;
         let cleaned = text.trim();
@@ -517,9 +753,30 @@
         }
 
         if (Array.isArray(data.emotional_tags)) addToPartition(agentId, 'emotional_tags', data.emotional_tags);
-        if (Array.isArray(data.key_events)) addToPartition(agentId, 'key_events', data.key_events);
+        if (Array.isArray(data.key_events)) {
+            // 兼容字符串或对象两种格式
+            for (const ev of data.key_events) {
+                if (typeof ev === 'string') {
+                    addToPartition(agentId, 'key_events', { content: ev, keywords: [], emotions: [] });
+                } else if (ev && typeof ev === 'object') {
+                    addToPartition(agentId, 'key_events', {
+                        content: ev.content || '',
+                        keywords: Array.isArray(ev.keywords) ? ev.keywords : [],
+                        emotions: Array.isArray(ev.emotions) ? ev.emotions : [],
+                    });
+                }
+            }
+        }
         if (Array.isArray(data.special_occasions)) addToPartition(agentId, 'special_occasions', data.special_occasions);
-        if (data.character_diary) addToPartition(agentId, 'character_diary', data.character_diary);
+        if (data.character_diary) {
+            if (Array.isArray(data.character_diary)) {
+                for (const d of data.character_diary) {
+                    addToPartition(agentId, 'character_diary', typeof d === 'string' ? { date: '', content: d } : d);
+                }
+            } else {
+                addToPartition(agentId, 'character_diary', { date: '', content: data.character_diary });
+            }
+        }
         if (Array.isArray(data.emotion_flow)) addToPartition(agentId, 'emotion_flow', data.emotion_flow);
         if (Array.isArray(data.todos)) addToPartition(agentId, 'todos', data.todos);
         if (Array.isArray(data.important_items)) addToPartition(agentId, 'important_items', data.important_items);
@@ -533,27 +790,191 @@
         return data;
     }
 
-    async function rollingSummarize(agentId, oldFloors) {
-        const prompt = getPrompt('summarize_floors');
-        const historyText = oldFloors
-            .map((m) => `${m.is_user ? '用户' : getCharName()}：${m.content}`)
-            .join('\n');
+    // 把大总结输出的结构化 JSON 分门别类写入对应分区
+    function applySummaryData(agentId, data) {
+        if (!data || typeof data !== 'object') return false;
 
-        const system = fillTemplate(prompt.system, {
-            char: getCharName(),
-            history: historyText,
-        });
-
-        const summary = await generateWithRetry(prompt.user, system);
-        if (!summary || !summary.trim()) {
-            log('楼层总结失败');
-            return null;
+        // 关键事件（对象结构，带 keywords + emotions）
+        if (Array.isArray(data.key_events)) {
+            for (const ev of data.key_events) {
+                if (typeof ev === 'string') {
+                    addToPartition(agentId, 'key_events', { content: ev, keywords: [], emotions: [] });
+                } else if (ev && typeof ev === 'object' && ev.content) {
+                    addToPartition(agentId, 'key_events', {
+                        content: String(ev.content),
+                        keywords: Array.isArray(ev.keywords) ? ev.keywords.map(String) : [],
+                        emotions: Array.isArray(ev.emotions) ? ev.emotions.map(String) : [],
+                    });
+                }
+            }
         }
 
-        addToPartition(agentId, 'key_events', `[楼层总结] ${summary.trim()}`);
-        await extractFacts(agentId, summary.trim());
-        log('楼层总结完成并写入');
-        return summary;
+        // 日记（带日期流水账）
+        if (Array.isArray(data.diary)) {
+            for (const d of data.diary) {
+                if (typeof d === 'string') {
+                    addToPartition(agentId, 'character_diary', { date: '', content: d });
+                } else if (d && typeof d === 'object') {
+                    addToPartition(agentId, 'character_diary', {
+                        date: d.date || '',
+                        content: d.content || '',
+                    });
+                }
+            }
+        }
+
+        // 情感流转（含好感度 + 关系定位 + 具体日期区间）
+        if (Array.isArray(data.emotion_flow)) {
+            for (const f of data.emotion_flow) {
+                if (typeof f === 'string') {
+                    addToPartition(agentId, 'emotion_flow', { content: f, affection: '', relationship: '', date: '' });
+                } else if (f && typeof f === 'object') {
+                    addToPartition(agentId, 'emotion_flow', {
+                        content: f.content || '',
+                        affection: f.affection || '',
+                        relationship: f.relationship || '',
+                        date: f.date || '',
+                    });
+                }
+            }
+        }
+
+        if (Array.isArray(data.special_occasions)) addToPartition(agentId, 'special_occasions', data.special_occasions);
+        // 待办去重 + 完成态合并（避免跨楼层重复、已完成被记成未完成）
+        if (Array.isArray(data.todos)) mergeTodos(agentId, data.todos);
+        // 重要物品去重（避免同一物品被误判为不同物品重复记录）
+        if (Array.isArray(data.important_items)) mergeImportantItems(agentId, data.important_items);
+
+        // NPC：解析 {name, identity, brief} 结构，命名「名字-身份」，记忆简略
+        if (Array.isArray(data.npc)) {
+            for (const n of data.npc) {
+                let npcName = null;
+                let identity = '';
+                let brief = '';
+                if (typeof n === 'string') {
+                    npcName = n.trim();
+                } else if (n && typeof n === 'object') {
+                    npcName = (n.name || '').trim();
+                    identity = (n.identity || '').trim();
+                    brief = (n.brief || '').trim();
+                }
+                if (!npcName) continue;
+
+                const npcMem = ensureNpcMemory(agentId, npcName, identity);
+                // NPC 记忆尽量简略：brief 作为关键事件存一条
+                if (brief) {
+                    addToPartition(agentId, 'key_events', {
+                        content: brief,
+                        keywords: [npcName, ...(identity ? [identity] : [])],
+                        emotions: [],
+                    }, npcName);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // 分批次总结：超过 batchSize 层的对话，拆成多批分别总结
+    async function summarizeInBatches(agentId, floors, batchSize) {
+        const results = [];
+        const total = floors.length;
+        const size = Math.max(1, batchSize || 25);
+
+        for (let start = 0; start < total; start += size) {
+            const end = Math.min(start + size, total);
+            const batch = floors.slice(start, end);
+            const batchText = batch
+                .map((m) => `${m.is_user ? '用户' : getCharName()}：${m.content}`)
+                .join('\n');
+
+            const prompt = getPrompt('summarize_all');
+            const system = fillTemplate(prompt.system, {
+                char: getCharName(),
+                chunk: batchText,
+            });
+
+            const out = await generateSmart(prompt.user, system);
+            const data = parseJsonFromText(out);
+            if (data) {
+                applySummaryData(agentId, data);
+                results.push(data);
+            } else {
+                // 该批次总结失败，记录但不中断整体
+                console.warn(`[LTM] 批次总结失败：${start}-${end} 层`);
+            }
+        }
+        return results;
+    }
+
+    async function rollingSummarize(agentId, oldFloors) {
+        // 改用大总结逻辑（结构化 JSON），而非单段文字摘要
+        await summarizeInBatches(agentId, oldFloors, getSettings().batchSize);
+    }
+
+    // 一次性大总结（手动触发 / 阈值触发共用的核心）
+    async function doFullSummarize(agentId, floors) {
+        const settings = getSettings();
+        const batchSize = settings.batchSize || 25;
+        const total = floors.length;
+
+        if (total === 0) return null;
+
+        if (total > 50) {
+            // 超过 50 层分批次
+            return await summarizeInBatches(agentId, floors, batchSize);
+        } else {
+            const allText = floors
+                .map((m) => `${m.is_user ? '用户' : getCharName()}：${m.content}`)
+                .join('\n');
+            const prompt = getPrompt('summarize_all');
+            const system = fillTemplate(prompt.system, {
+                char: getCharName(),
+                chunk: allText,
+            });
+            const out = await generateSmart(prompt.user, system);
+            const data = parseJsonFromText(out);
+            if (data) applySummaryData(agentId, data);
+            return data;
+        }
+    }
+
+    // 大总结完成后：隐藏除最近 keepActiveFloors 层以外的全部楼层。
+    // getContext() 不暴露 hideChatMessageRange，故直接设置 is_system=true（与酒馆 /hide 命令等效），
+    // 再调用 ctx.saveChat()（即 saveChatConditional）持久化，并同步刷新 DOM。
+    async function hideFloorsExceptRecent(agentId) {
+        const ctx = getSTContext();
+        const chat = ctx?.chat || [];
+        const keep = getSettings().keepActiveFloors || 5;
+        if (!chat.length) return;
+
+        const hideCount = chat.length - keep;
+        if (hideCount <= 0) return; // 没有需要隐藏的楼层
+
+        // 直接设置 is_system 标记（隐藏 [0, hideCount) 即前 hideCount 条）
+        for (let i = 0; i < hideCount; i++) {
+            if (chat[i]) chat[i].is_system = true;
+            // 同步 DOM 属性，让界面即时显示隐藏（幽灵图标）
+            const block = document.querySelector(`.mes[mesid="${i}"]`);
+            if (block) block.setAttribute('is_system', 'true');
+        }
+
+        // 保存聊天
+        if (typeof ctx?.saveChat === 'function') {
+            try {
+                await ctx.saveChat();
+            } catch (e) {
+                console.warn('[记忆宫殿] saveChat 失败：', e);
+            }
+        }
+    }
+
+    // 标记：大总结刚完成，下一轮注入情感流转一次
+    function markFlowInjectionPending(agentId) {
+        const mem = getCharacterMemory(agentId);
+        if (!mem.meta) mem.meta = {};
+        mem.meta.pendingFlowInjection = true;
+        saveSettings();
     }
 
     async function manualSummarizeAll(agentId) {
@@ -573,35 +994,27 @@
             return;
         }
 
-        setStatus('<i class="fa-solid fa-spinner fa-spin"></i> 正在用主模型总结，请稍候……');
+        setStatus('<i class="fa-solid fa-spinner fa-spin"></i> 正在总结，请稍候……');
 
         try {
-            // 1) 整段对话滚动总结（提炼关键事件与剧情主线）
-            const allText = chat
-                .map((m) => `${m.is_user ? '用户' : getCharName()}：${m.mes}`)
-                .join('\n');
-
-            const summaryPrompt = getPrompt('summarize_floors');
-            const summarySystem = fillTemplate(summaryPrompt.system, {
-                char: getCharName(),
-                history: allText,
-            });
-            const summary = await generateWithRetry(summaryPrompt.user, summarySystem);
-            if (summary && summary.trim()) {
-                addToPartition(agentId, 'key_events', `[一键总结] ${summary.trim()}`);
-            }
-
-            // 2) 结构化提取所有分区（情绪、事件、纪念日、日记、情感、待办、物品、NPC）
-            await extractFacts(agentId, allText);
-
-            // 3) 待办提取
-            await checkTodosForce(agentId, allText);
-
-            setStatus('<i class="fa-solid fa-circle-check"></i> 总结完成，记忆已更新。');
+            const floors = chat.map((m) => ({
+                is_user: m.is_user,
+                content: String(m.mes),
+            }));
+            await doFullSummarize(agentId, floors);
+            getCharacterMemory(agentId).meta.lastSummarizedFloor = chat.length;
+            // 标记：下一轮注入情感流转一次（稳定关系级别）
+            markFlowInjectionPending(agentId);
+            // 隐藏除最近 keepActiveFloors 层以外的全部楼层
+            await hideFloorsExceptRecent(agentId);
+            setStatus('<i class="fa-solid fa-circle-check"></i> 总结完成，记忆已更新，历史楼层已归档隐藏。');
+            toastr.success('记忆宫殿：总结完成，已写入记忆库并隐藏旧楼层');
             renderCurrentView();
         } catch (err) {
-            console.warn('[LTM] 一键总结失败：', err);
-            setStatus('<i class="fa-solid fa-triangle-exclamation"></i> 总结失败，请检查酒馆主模型是否可用。', true);
+            console.warn('[记忆宫殿] 一键总结失败：', err);
+            const reason = err?.message || '请检查模型是否可用';
+            setStatus('<i class="fa-solid fa-triangle-exclamation"></i> 总结失败：' + esc(reason), true);
+            toastr.error('记忆宫殿：总结失败，' + reason);
         }
     }
 
@@ -611,7 +1024,7 @@
         const out = await generateWithRetry(prompt.user, system);
         const todos = parseJsonFromText(out);
         if (Array.isArray(todos) && todos.length) {
-            addToPartition(agentId, 'todos', todos);
+            mergeTodos(agentId, todos);
         }
     }
 
@@ -629,16 +1042,103 @@
         const out = await generateWithRetry(prompt.user, system);
         const todos = parseJsonFromText(out);
         if (Array.isArray(todos) && todos.length) {
-            addToPartition(agentId, 'todos', todos);
+            mergeTodos(agentId, todos);
         }
 
         const pending = mem.todos.filter((t) => !(t && t.done));
         return pending;
     }
 
-    function buildInjectionPrompt(agentId) {
+    // 情绪反向映射：负面情绪 → 相对的正面情绪。
+    // 当上下文命中负面情绪时，同时触发对应正面情绪标签的事件，
+    // 让 char 回忆起 user 的好，冲淡冲突感。
+    const EMOTION_OPPOSITES = {
+        '伤心': ['开心', '幸福', '温暖', '甜蜜', '感动'],
+        '难过': ['开心', '幸福', '温暖', '快乐'],
+        '生气': ['温暖', '甜蜜', '体贴', '包容', '温柔'],
+        '愤怒': ['温暖', '甜蜜', '体贴', '温柔'],
+        '失望': ['温暖', '幸福', '惊喜', '陪伴'],
+        '委屈': ['温暖', '安慰', '陪伴', '体贴'],
+        '生气失望': ['温暖', '幸福'],
+        '冷漠': ['温暖', '亲密', '依恋'],
+        '害怕': ['安心', '守护', '依靠', '温暖'],
+        '恐惧': ['安心', '守护', '依靠'],
+        '孤独': ['陪伴', '温暖', '亲密'],
+        '难过生气': ['开心', '温暖', '甜蜜'],
+        '讨厌': ['喜欢', '心动', '温暖'],
+        '恨': ['爱', '心动', '温暖', '甜蜜'],
+        '悲伤': ['快乐', '温暖', '幸福'],
+        '沮丧': ['鼓励', '支持', '温暖'],
+    };
+
+    // 判断文本是否命中某种情绪（含反向映射）
+    function matchEmotion(emotion, text) {
+        if (!emotion) return false;
+        if (text.includes(emotion)) return true;
+        // 反向：如果上下文命中负面情绪，则相对的正面情绪也视为命中
+        for (const neg in EMOTION_OPPOSITES) {
+            if (text.includes(neg)) {
+                const positives = EMOTION_OPPOSITES[neg];
+                if (positives.some((p) => p === emotion || emotion.includes(p) || p.includes(emotion))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // 关键词/情绪标签检索召回：只返回命中的关键事件
+    // 情绪标签支持反向召回：上下文命中负面情绪时，也触发相对的正面情绪标签事件
+    function retrieveRelevantEvents(agentId, userText) {
+        const mem = getCharacterMemory(agentId);
+        const events = mem.key_events || [];
+        const text = String(userText || '');
+
+        const matched = [];
+        for (const ev of events) {
+            if (!ev || typeof ev !== 'object') continue;
+            const keywords = ev.keywords || [];
+            const emotions = ev.emotions || [];
+
+            // 命中关键词（锚点词）
+            const hitKeyword = keywords.some((kw) => kw && text.includes(kw));
+            // 命中情绪标签：情绪词出现在上下文中，或反向映射命中
+            const hitEmotion = emotions.some((em) => em && matchEmotion(em, text));
+
+            if (hitKeyword || hitEmotion) {
+                matched.push(ev);
+            }
+        }
+        return matched;
+    }
+
+    // 检索命中日期关键词的日记（用于纪念日）
+    function retrieveRelevantDiary(agentId, userText) {
+        const mem = getCharacterMemory(agentId);
+        const diary = mem.character_diary || [];
+        const text = String(userText || '');
+        if (!text) return [];
+
+        const matched = [];
+        for (const d of diary) {
+            if (!d || typeof d !== 'object') continue;
+            const date = String(d.date || '').trim();
+            if (!date) continue;
+            // 日期关键词：几月几日 / 月日 / 节日名
+            // 提取日期中的数字部分作为关键词（如「4月19日」「4.19」）
+            const dateTokens = date.split(/[^0-9一二三四五六七八九十月日号点\.]/).filter((t) => t && t.length >= 2);
+            const hit = dateTokens.some((t) => t && text.includes(t)) || text.includes(date);
+            if (hit) {
+                matched.push(d);
+            }
+        }
+        return matched;
+    }
+
+    function buildInjectionPrompt(agentId, userText) {
         const mem = getCharacterMemory(agentId);
         const parts = [];
+        const text = String(userText || '');
 
         const push = (label, arr, formatter) => {
             if (arr && arr.length) {
@@ -647,19 +1147,76 @@
             }
         };
 
-        push('情绪标签', mem.emotional_tags);
-        push('关键事件', mem.key_events);
-        push('纪念日', mem.special_occasions);
-        push('日记', mem.character_diary);
-        push('情感流转', mem.emotion_flow);
-        push('待办/约定', mem.todos.filter((t) => !(t && t.done)).map((t) => (typeof t === 'string' ? t : t.content)));
-        push('重要物品', mem.important_items, (it) => (typeof it === 'string' ? it : `${it.name}（${it.significance}）`));
+        // 关键事件：只发送检索命中的事件（核心）
+        const relevant = retrieveRelevantEvents(agentId, userText);
+        if (relevant.length) {
+            const eventText = relevant.map((ev) => {
+                const kw = (ev.keywords || []).join('/');
+                const em = (ev.emotions || []).join('/');
+                const tag = [kw, em].filter(Boolean).join(' · ');
+                return tag ? `${ev.content}（${tag}）` : ev.content;
+            }).join('；');
+            parts.push(`相关记忆事件：${eventText}`);
+        }
 
+        // 日记：仅命中日期关键词时发送（纪念日用途）
+        const relevantDiary = retrieveRelevantDiary(agentId, userText);
+        if (relevantDiary.length) {
+            const diaryText = relevantDiary
+                .map((d) => (d.date ? `[${d.date}] ${d.content}` : d.content))
+                .join('；');
+            parts.push(`纪念日记忆：${diaryText}`);
+        }
+
+        // 待办/约定（未完成，轻量）
+        const pendingTodos = (mem.todos || []).filter((t) => !(t && t.done));
+        push('待办/约定', pendingTodos.map((t) => (typeof t === 'string' ? t : t.content)));
+
+        // 情感流转：只在「刚完成大总结」的那一轮发送一次，用于稳定关系级别
+        const shouldInjectFlow = mem.meta && mem.meta.pendingFlowInjection === true;
+        if (shouldInjectFlow) {
+            const flows = mem.emotion_flow || [];
+            if (flows.length) {
+                const latest = flows[flows.length - 1];
+                if (typeof latest === 'object') {
+                    const flowParts = [];
+                    if (latest.date) flowParts.push(`阶段：${latest.date}`);
+                    if (latest.content) flowParts.push(latest.content);
+                    if (latest.affection) flowParts.push(`好感度：${latest.affection}`);
+                    if (latest.relationship) flowParts.push(`关系定位：${latest.relationship}`);
+                    if (flowParts.length) {
+                        parts.push(`当前情感状态（稳定关系）：${flowParts.join('；')}`);
+                    }
+                }
+            }
+            // 只注入这一次，之后清除标记
+            mem.meta.pendingFlowInjection = false;
+            saveSettings();
+        }
+
+        // NPC：必须命中 NPC 名字或身份关键词，才发送该 NPC 的简略记忆
         for (const npcName in mem.npcs) {
             const npcMem = mem.npcs[npcName];
+            const identity = npcMem?.meta?.identity || '';
+            // 名字「张三-掌柜」拆出名字与身份，都作为触发关键词
+            const nameTokens = npcName.split(/[-—–_·\s]/).filter(Boolean);
+            const triggerTokens = [...nameTokens, identity].filter(Boolean);
+
+            const hit = triggerTokens.some((t) => t && text.includes(t));
+            if (!hit) continue;
+
             const npcKeyEvents = npcMem.key_events || [];
             if (npcKeyEvents.length) {
-                parts.push(`【${npcName}】的关键事件：${npcKeyEvents.join('；')}`);
+                // NPC 记忆尽量简略，只取最近一条关键事件
+                const brief = npcKeyEvents
+                    .map((e) => (typeof e === 'object' ? e.content : e))
+                    .filter(Boolean)
+                    .slice(-1)
+                    .join('；');
+                if (brief) {
+                    const label = identity ? `${npcName}（${identity}）` : npcName;
+                    parts.push(`【${label}】记忆：${brief}`);
+                }
             }
         }
 
@@ -667,6 +1224,8 @@
         return `\n\n[以下是你（${getCharName()}）的长期记忆，请自然融入你的回答，不要直接复述这些文字]\n${parts.join('\n')}`;
     }
 
+    // 核心入口：每次用户发消息时调用。只负责「判断是否该总结」+「检索注入」，
+    // 不再每层提取。
     async function processUserMessage(userText) {
         const settings = getSettings();
         if (!settings.enabled) return '';
@@ -676,31 +1235,41 @@
 
         const context = getSTContext();
         const chat = context?.chat || [];
-        const totalFloors = chat.length;
-        const threshold = settings.summaryThreshold;
-        const keep = settings.keepActiveFloors;
-
         const mem = getCharacterMemory(agentId);
+        const lastSummarized = mem.meta.lastSummarizedFloor || 0;
 
-        const overflow = Math.max(0, totalFloors - keep);
-        mem.meta.pendingFloors = (mem.meta.pendingFloors || 0) + overflow;
+        // 尚未总结的新楼层数
+        const newFloorCount = chat.length - lastSummarized;
 
-        if (mem.meta.pendingFloors >= threshold) {
-            const oldFloors = chat.slice(0, Math.max(0, totalFloors - keep)).map((m) => ({
+        // 达到阈值才触发总结（后台静默，不阻塞）
+        if (newFloorCount >= settings.summaryThreshold) {
+            const newFloors = chat.slice(lastSummarized).map((m) => ({
                 is_user: m.is_user,
                 content: String(m.mes),
             }));
-            if (oldFloors.length) {
-                await rollingSummarize(agentId, oldFloors);
-            }
-            mem.meta.pendingFloors = 0;
+            // 后台静默总结：不 await，避免阻塞本轮回复
+            doFullSummarize(agentId, newFloors)
+                .then(async () => {
+                    mem.meta.lastSummarizedFloor = chat.length;
+                    // 标记：下一轮注入情感流转一次
+                    markFlowInjectionPending(agentId);
+                    saveSettings();
+                    // 隐藏除最近 keepActiveFloors 层以外的全部楼层
+                    try {
+                        await hideFloorsExceptRecent(agentId);
+                    } catch (hideErr) {
+                        console.warn('[记忆宫殿] 隐藏楼层失败：', hideErr);
+                    }
+                    toastr.success('记忆宫殿：后台总结完成，旧楼层已归档');
+                })
+                .catch((err) => {
+                    console.warn('[记忆宫殿] 后台总结失败：', err);
+                    toastr.error('记忆宫殿：后台总结失败，' + (err?.message || '请检查模型'));
+                });
         }
 
-        const recent = chat.slice(-6).map((m) => `${m.is_user ? '用户' : getCharName()}：${m.mes}`).join('\n');
-        await extractFacts(agentId, recent);
-        await checkTodos(agentId, recent);
-
-        return buildInjectionPrompt(agentId);
+        // 检索命中并注入（仅命中关键词/情绪的关键事件）
+        return buildInjectionPrompt(agentId, userText);
     }
 
     // =============================================================
@@ -759,6 +1328,7 @@
         style.id = 'ltm-panel-style';
         style.textContent = `
 #ltm-fab{position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:30000;width:52px;height:52px;cursor:grab;user-select:none;-webkit-user-select:none;transition:transform .2s ease,right .25s ease;touch-action:none;}
+#ltm-fab.ltm-fab-hidden{opacity:0;pointer-events:none;}
 #ltm-fab .ltm-fab-ball{width:100%;height:100%;border-radius:14px;background:linear-gradient(135deg,#8c1c1c,#5e1010);border:1px solid rgba(201,168,106,.6);box-shadow:0 2px 12px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#f6f1e6;font-size:22px;transition:all .25s ease;position:relative;}
 #ltm-fab .ltm-fab-label{position:absolute;right:56px;top:50%;transform:translateY(-50%);white-space:nowrap;background:rgba(94,16,16,.9);color:#f6f1e6;font-size:12px;padding:4px 10px;border-radius:8px;opacity:0;pointer-events:none;transition:opacity .2s ease;}
 #ltm-fab:hover .ltm-fab-label{opacity:1;}
@@ -766,16 +1336,16 @@
 #ltm-fab.ltm-fab-collapsed:hover,#ltm-fab.ltm-fab-collapsed.ltm-fab-dragging{right:0;}
 #ltm-panel-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.35);z-index:29999;opacity:0;pointer-events:none;transition:opacity .25s ease;}
 #ltm-panel-overlay.ltm-open{opacity:1;pointer-events:auto;}
-#ltm-panel-drawer{position:fixed;top:0;right:0;bottom:0;width:460px;max-width:92vw;height:100vh;z-index:30001;background-color:#f6f1e6;background-image:linear-gradient(160deg,#f6f1e6,#efe6d3);border-left:1px solid rgba(140,28,28,.25);box-shadow:-6px 0 24px rgba(0,0,0,.25);transform:translateX(105%);transition:transform .3s cubic-bezier(.22,1,.36,1);display:flex;flex-direction:column;color:#3a2f2a;box-sizing:border-box;overflow:hidden;font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;}
+#ltm-panel-drawer{position:fixed;top:0;right:0;bottom:0;width:460px;max-width:92vw;height:100vh;height:100dvh;z-index:30002;background-color:#f6f1e6;background-image:linear-gradient(160deg,#f6f1e6,#efe6d3);border-left:1px solid rgba(140,28,28,.25);box-shadow:-6px 0 24px rgba(0,0,0,.25);transform:translateX(105%);transition:transform .3s cubic-bezier(.22,1,.36,1);display:flex;flex-direction:column;color:#3a2f2a;box-sizing:border-box;overflow:hidden;font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;max-height:100vh;max-height:100dvh;}
 #ltm-panel-drawer.ltm-open{transform:translateX(0);}
-.ltm-drawer-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:linear-gradient(120deg,rgba(94,16,16,.9),rgba(140,28,28,.85));border-bottom:1px solid rgba(255,255,255,.15);color:#f6f1e6;flex-shrink:0;}
+.ltm-drawer-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:linear-gradient(120deg,rgba(94,16,16,.9),rgba(140,28,28,.85));border-bottom:1px solid rgba(255,255,255,.15);color:#f6f1e6;flex-shrink:0;min-height:52px;}
 .ltm-drawer-logo{font-weight:700;font-size:1.15rem;letter-spacing:.06em;display:flex;align-items:center;gap:8px;}
 .ltm-drawer-logo i{color:#c9a86a;}
 .ltm-drawer-close{background:none;border:1px solid rgba(255,255,255,.3);border-radius:50%;width:30px;height:30px;color:#f6f1e6;cursor:pointer;display:flex;align-items:center;justify-content:center;}
 .ltm-nav-tabs{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;border-bottom:1px solid rgba(140,28,28,.2);flex-shrink:0;background:rgba(255,255,255,.25);}
 .ltm-nav-tab{font-size:.8rem;font-weight:600;color:rgba(58,47,42,.7);background:transparent;border:1px solid transparent;padding:6px 13px;border-radius:999px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;}
 .ltm-nav-tab.ltm-active{background:rgba(140,28,28,.9);color:#f6f1e6;border-color:#c9a86a;}
-.ltm-drawer-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:16px;-webkit-overflow-scrolling:touch;}
+.ltm-drawer-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:16px 16px 80px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;-webkit-overflow-scroll-behavior:contain;touch-action:pan-y;}
 .ltm-card{background:rgba(255,255,255,.55);border:1px solid rgba(140,28,28,.25);border-top:3px solid #8c1c1c;border-radius:12px;padding:14px;margin-bottom:14px;box-sizing:border-box;}
 .ltm-card-title{font-weight:700;font-size:1rem;display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:10px;margin-bottom:12px;border-bottom:1px dashed rgba(140,28,28,.25);color:#5e1010;}
 .ltm-card-title i{color:#c9a86a;}
@@ -818,7 +1388,15 @@
 .ltm-pill-group{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap;}
 .ltm-pill{flex:1;min-width:60px;font-weight:600;font-size:.85rem;background:rgba(255,255,255,.5);border:1px solid rgba(140,28,28,.25);color:#3a2f2a;border-radius:999px;padding:7px 0;cursor:pointer;text-align:center;}
 .ltm-pill.ltm-active{background:#8c1c1c;color:#f6f1e6;border-color:#5e1010;}
-@media(max-width:640px){#ltm-panel-drawer{width:100vw;max-width:100vw;}.ltm-grid{grid-template-columns:1fr 1fr;}.ltm-nav-tabs{overflow-x:auto;flex-wrap:nowrap;}}
+.ltm-event-meta{display:flex;align-items:center;gap:6px;font-size:.75rem;}
+.ltm-meta-label{flex-shrink:0;color:#8c1c1c;font-weight:700;background:rgba(201,168,106,.2);border:1px solid rgba(201,168,106,.4);border-radius:6px;padding:1px 7px;}
+.ltm-meta-val{flex:1;color:#5a4a3f;outline:none;border-bottom:1px dashed rgba(140,28,28,.2);padding:1px 2px;min-width:0;word-break:break-all;}
+.ltm-diary-date{font-size:.72rem;color:#8c1c1c;font-weight:700;outline:none;}
+.ltm-affection{font-size:.75rem;color:#b23a2a;font-weight:600;outline:none;}
+.ltm-model-row{display:flex;gap:8px;align-items:center;}
+.ltm-model-row .ltm-input{flex:1;min-width:0;}
+.ltm-model-row .ltm-btn{flex-shrink:0;}
+@media(max-width:640px){#ltm-panel-drawer{width:100vw;max-width:100vw;height:100vh;height:100dvh;max-height:100vh;max-height:100dvh;}.ltm-grid{grid-template-columns:1fr 1fr;}.ltm-nav-tabs{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;}.ltm-drawer-body{padding-bottom:calc(80px + env(safe-area-inset-bottom,0px));}}
         `;
         document.head.appendChild(style);
     }
@@ -831,18 +1409,18 @@
         const shell = document.createElement('div');
         shell.style.cssText = 'all:initial;';
         shell.innerHTML = `
-        <div id="ltm-fab" class="ltm-fab-collapsed" title="记忆档案">
-            <div class="ltm-fab-ball"><i class="fa-solid fa-scroll"></i></div>
-            <div class="ltm-fab-label">记忆档案</div>
+        <div id="ltm-fab" class="ltm-fab-collapsed" title="记忆宫殿">
+            <div class="ltm-fab-ball"><i class="fa-solid fa-landmark"></i></div>
+            <div class="ltm-fab-label">记忆宫殿</div>
         </div>
         <div id="ltm-panel-overlay"></div>
         <aside id="ltm-panel-drawer" style="background-color:#f6f1e6;background-image:linear-gradient(160deg,#f6f1e6,#efe6d3);">
             <div class="ltm-drawer-head">
-                <div class="ltm-drawer-logo"><i class="fa-solid fa-scroll"></i> 记忆档案 · ARCHIVE</div>
+                <div class="ltm-drawer-logo"><i class="fa-solid fa-landmark"></i> 记忆宫殿 · MEMORY PALACE</div>
                 <button class="ltm-drawer-close" id="ltm-panel-close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="ltm-nav-tabs" id="ltm-nav-tabs">
-                <button class="ltm-nav-tab ltm-active" data-view="memory"><i class="fa-solid fa-landmark"></i> 记忆殿堂</button>
+                <button class="ltm-nav-tab ltm-active" data-view="memory"><i class="fa-solid fa-landmark"></i> 记忆宫殿</button>
                 <button class="ltm-nav-tab" data-view="npc"><i class="fa-solid fa-user-group"></i> NPC</button>
                 <button class="ltm-nav-tab" data-view="other"><i class="fa-solid fa-inbox"></i> 其他</button>
                 <button class="ltm-nav-tab" data-view="prompts"><i class="fa-solid fa-terminal"></i> 提示词</button>
@@ -875,12 +1453,14 @@
     function openPanel() {
         document.getElementById('ltm-panel-drawer').classList.add('ltm-open');
         document.getElementById('ltm-panel-overlay').classList.add('ltm-open');
+        document.getElementById('ltm-fab').classList.add('ltm-fab-hidden');
         renderCurrentView();
     }
 
     function closePanel() {
         document.getElementById('ltm-panel-drawer').classList.remove('ltm-open');
         document.getElementById('ltm-panel-overlay').classList.remove('ltm-open');
+        document.getElementById('ltm-fab').classList.remove('ltm-fab-hidden');
     }
 
     function bindFabDrag() {
@@ -1102,6 +1682,91 @@
             </div>`;
         }
 
+        // 关键事件：对象结构，含关键词 + 情绪标签，均可编辑
+        if (part === 'key_events') {
+            if (typeof item === 'string') {
+                // 兼容旧数据：纯字符串
+                return `
+                <div class="ltm-item">
+                    <span class="ltm-item-text" contenteditable="true" data-editable data-part="key_events" data-idx="${index}" data-npc="${npcAttr}">${esc(item)}</span>
+                    <div class="ltm-item-actions">
+                        <button class="ltm-btn ltm-btn-sm ltm-btn-danger" data-act="del" data-part="key_events" data-idx="${index}" data-npc="${npcAttr}">删</button>
+                    </div>
+                </div>`;
+            }
+            const keywords = (item.keywords || []).join('、');
+            const emotions = (item.emotions || []).join('、');
+            return `
+            <div class="ltm-item ltm-event-item">
+                <div class="ltm-item-text" style="flex-direction:column;display:flex;gap:5px;">
+                    <div contenteditable="true" data-editable data-part="key_events" data-idx="${index}" data-field="content" data-npc="${npcAttr}">${esc(item.content || '')}</div>
+                    <div class="ltm-event-meta">
+                        <span class="ltm-meta-label">关键词</span>
+                        <span contenteditable="true" data-editable data-part="key_events" data-idx="${index}" data-field="keywords" data-npc="${npcAttr}" class="ltm-meta-val">${esc(keywords)}</span>
+                    </div>
+                    <div class="ltm-event-meta">
+                        <span class="ltm-meta-label">情绪</span>
+                        <span contenteditable="true" data-editable data-part="key_events" data-idx="${index}" data-field="emotions" data-npc="${npcAttr}" class="ltm-meta-val">${esc(emotions)}</span>
+                    </div>
+                </div>
+                <div class="ltm-item-actions">
+                    <button class="ltm-btn ltm-btn-sm ltm-btn-danger" data-act="del" data-part="key_events" data-idx="${index}" data-npc="${npcAttr}">删</button>
+                </div>
+            </div>`;
+        }
+
+        // 日记：带日期
+        if (part === 'character_diary') {
+            if (typeof item === 'string') {
+                return `
+                <div class="ltm-item">
+                    <span class="ltm-item-text" contenteditable="true" data-editable data-part="character_diary" data-idx="${index}" data-npc="${npcAttr}">${esc(item)}</span>
+                    <div class="ltm-item-actions">
+                        <button class="ltm-btn ltm-btn-sm ltm-btn-danger" data-act="del" data-part="character_diary" data-idx="${index}" data-npc="${npcAttr}">删</button>
+                    </div>
+                </div>`;
+            }
+            const date = item.date || '';
+            return `
+            <div class="ltm-item">
+                <div class="ltm-item-text" style="flex-direction:column;display:flex;gap:3px;">
+                    <div class="ltm-diary-date" contenteditable="true" data-editable data-part="character_diary" data-idx="${index}" data-field="date" data-npc="${npcAttr}">${esc(date || '（点此填日期，如 4.19）')}</div>
+                    <div contenteditable="true" data-editable data-part="character_diary" data-idx="${index}" data-field="content" data-npc="${npcAttr}">${esc(item.content || '')}</div>
+                </div>
+                <div class="ltm-item-actions">
+                    <button class="ltm-btn ltm-btn-sm ltm-btn-danger" data-act="del" data-part="character_diary" data-idx="${index}" data-npc="${npcAttr}">删</button>
+                </div>
+            </div>`;
+        }
+
+        // 情感流转：含好感度
+        if (part === 'emotion_flow') {
+            if (typeof item === 'string') {
+                return `
+                <div class="ltm-item">
+                    <span class="ltm-item-text" contenteditable="true" data-editable data-part="emotion_flow" data-idx="${index}" data-npc="${npcAttr}">${esc(item)}</span>
+                    <div class="ltm-item-actions">
+                        <button class="ltm-btn ltm-btn-sm ltm-btn-danger" data-act="del" data-part="emotion_flow" data-idx="${index}" data-npc="${npcAttr}">删</button>
+                    </div>
+                </div>`;
+            }
+            const affection = item.affection || '';
+            const relationship = item.relationship || '';
+            const flowDate = item.date || '';
+            return `
+            <div class="ltm-item">
+                <div class="ltm-item-text" style="flex-direction:column;display:flex;gap:3px;">
+                    <div class="ltm-diary-date" contenteditable="true" data-editable data-part="emotion_flow" data-idx="${index}" data-field="date" data-npc="${npcAttr}">${esc(flowDate || '（点此填日期区间，如 2036.4.1-2036.4.19）')}</div>
+                    <div contenteditable="true" data-editable data-part="emotion_flow" data-idx="${index}" data-field="content" data-npc="${npcAttr}">${esc(item.content || '')}</div>
+                    <div class="ltm-affection" contenteditable="true" data-editable data-part="emotion_flow" data-idx="${index}" data-field="affection" data-npc="${npcAttr}">${esc(affection ? '好感度：' + affection : '（点击填好感度）')}</div>
+                    <div class="ltm-affection" style="color:#5e7a3e;" contenteditable="true" data-editable data-part="emotion_flow" data-idx="${index}" data-field="relationship" data-npc="${npcAttr}">${esc(relationship ? '关系：' + relationship : '（点击填关系定位）')}</div>
+                </div>
+                <div class="ltm-item-actions">
+                    <button class="ltm-btn ltm-btn-sm ltm-btn-danger" data-act="del" data-part="emotion_flow" data-idx="${index}" data-npc="${npcAttr}">删</button>
+                </div>
+            </div>`;
+        }
+
         return `
         <div class="ltm-item">
             <span class="ltm-item-text" contenteditable="true" data-editable data-part="${part}" data-idx="${index}" data-npc="${npcAttr}">${esc(item)}</span>
@@ -1117,12 +1782,17 @@
 
         const npcs = listNpcs(agentId);
         const cards = npcs.length
-            ? npcs.map((n) => `
+            ? npcs.map((n) => {
+                const npcMem = getNpcMemory(agentId, n);
+                const identity = npcMem?.meta?.identity || '';
+                const label = identity ? `${n} · ${identity}` : n;
+                return `
                 <div class="ltm-char-card" data-npc="${esc(n)}">
                     <div class="ltm-char-icon"><i class="fa-solid fa-user-secret"></i></div>
-                    <div class="ltm-char-name">${esc(n)}</div>
+                    <div class="ltm-char-name">${esc(label)}</div>
                     <button class="ltm-card-delete" data-act="del-npc" data-npc="${esc(n)}" title="删除建档"><i class="fa-solid fa-trash"></i></button>
-                </div>`).join('')
+                </div>`;
+            }).join('')
             : '<div class="ltm-empty">（暂无 NPC 建档）</div>';
 
         return `
@@ -1133,7 +1803,7 @@
                     <button class="ltm-btn ltm-btn-sm" data-act="add-npc">+ 手动建档</button>
                 </div>
                 <div class="ltm-grid">${cards}</div>
-                <p class="ltm-hint"><i class="fa-solid fa-circle-info"></i> 对话中频繁出现的 NPC 会自动建档；也可手动创建。</p>
+                <p class="ltm-hint"><i class="fa-solid fa-circle-info"></i> NPC 按「名字-身份」建档。只有对话命中 NPC 名字或身份关键词时，才会激活发送该 NPC 的简略记忆。</p>
             </div>
             <div id="ltm-npc-detail"></div>
         </div>`;
@@ -1257,11 +1927,14 @@
 
                 <label class="ltm-field-label">待办检查频率（每 N 轮）</label>
                 <input type="number" class="ltm-input" data-setting="todoCheckInterval" value="${s.todoCheckInterval}" min="1">
+
+                <label class="ltm-field-label">分批次总结大小（每批楼层数）</label>
+                <input type="number" class="ltm-input" data-setting="batchSize" value="${s.batchSize}" min="10">
             </div>
 
             <div class="ltm-card">
                 <div class="ltm-card-title"><span class="ltm-title-left"><i class="fa-solid fa-wand-magic-sparkles"></i> 一键总结</span></div>
-                <p class="ltm-hint"><i class="fa-solid fa-circle-info"></i> 立即用酒馆主模型总结当前角色的全部对话，提炼关键事件、情绪、待办、物品等，并写入记忆库。</p>
+                <p class="ltm-hint"><i class="fa-solid fa-circle-info"></i> 立即总结当前角色的全部对话，提炼关键事件（含关键词/情绪）、日记、情感流转等，并写入记忆库。超过 50 层会自动分批次总结。</p>
                 <button class="ltm-btn" data-act="summarize-now" style="width:100%;padding:12px;">
                     <i class="fa-solid fa-bolt"></i> 立即总结当前对话
                 </button>
@@ -1269,8 +1942,27 @@
             </div>
 
             <div class="ltm-card">
-                <div class="ltm-card-title"><span class="ltm-title-left"><i class="fa-solid fa-plug"></i> 模型说明</span></div>
-                <p class="ltm-hint" style="margin:0;"><i class="fa-solid fa-circle-check"></i> 本插件无需外接 API。记忆提取与总结自动使用「酒馆当前选中的主模型」，无需额外填写 Key 或接口地址。</p>
+                <div class="ltm-card-title"><span class="ltm-title-left"><i class="fa-solid fa-plug"></i> 独立 API（可选）</span></div>
+                <p class="ltm-hint"><i class="fa-solid fa-circle-info"></i> 默认复用酒馆主模型，无需配置。如需用独立的 API 专门做总结，可在此开启并填写。</p>
+
+                <div class="ltm-switch-row">
+                    <span>启用独立 API</span>
+                    <label class="ltm-switch"><input type="checkbox" data-setting="externalApiEnabled" ${s.externalApiEnabled ? 'checked' : ''}><span class="ltm-slider"></span></label>
+                </div>
+
+                <label class="ltm-field-label">API 地址（完整 URL）</label>
+                <input type="text" class="ltm-input" data-setting="externalApiUrl" value="${esc(s.externalApiUrl || '')}" placeholder="https://api.openai.com/v1/chat/completions">
+
+                <label class="ltm-field-label">API Key</label>
+                <input type="password" class="ltm-input" data-setting="externalApiKey" value="${esc(s.externalApiKey || '')}" placeholder="sk-...">
+
+                <label class="ltm-field-label">模型名称</label>
+                <div class="ltm-model-row">
+                    <input type="text" class="ltm-input" id="ltm-external-model-input" data-setting="externalApiModel" value="${esc(s.externalApiModel || '')}" placeholder="gpt-4o-mini 或 claude-3-5-sonnet 等">
+                    <button class="ltm-btn ltm-btn-ghost" data-act="fetch-models"><i class="fa-solid fa-cloud-arrow-down"></i> 拉取模型</button>
+                </div>
+                <select class="ltm-input" id="ltm-external-model-select" style="margin-top:6px;display:none;"></select>
+                <p class="ltm-hint" id="ltm-model-status" style="display:none;"></p>
             </div>
 
             <div class="ltm-card">
@@ -1316,8 +2008,11 @@
             const act = btn.dataset.act;
             const part = btn.dataset.part;
             const idx = parseInt(btn.dataset.idx, 10);
+            // 关键：删除/编辑的目标记忆以按钮上的 data-npc 为准；
+            // 只有当前确实处于 NPC 详情视图（currentNpc 与按钮一致）时才用 NPC。
+            // 否则一律操作主角色记忆，避免 currentNpc 残留导致删错位置。
             const npc = btn.dataset.npc || null;
-            const npcName = currentNpc || npc;
+            const npcName = (currentNpc && npc === currentNpc) ? npc : (npc || null);
 
             switch (act) {
                 case 'del':
@@ -1341,9 +2036,18 @@
                     }
                     break;
                 case 'add-npc': {
-                    const name = prompt('请输入 NPC 名称：');
+                    const name = prompt('请输入 NPC 名字与身份，格式「名字-身份」，例如「张三-客栈掌柜」：');
                     if (name && name.trim()) {
-                        ensureNpcMemory(agentId, name.trim());
+                        const raw = name.trim();
+                        // 解析「名字-身份」：用第一个分隔符拆开
+                        const sepIdx = raw.search(/[-—–_·]/);
+                        let npcName = raw;
+                        let identity = '';
+                        if (sepIdx > 0) {
+                            npcName = raw.slice(0, sepIdx).trim();
+                            identity = raw.slice(sepIdx + 1).trim();
+                        }
+                        ensureNpcMemory(agentId, npcName, identity);
                         renderCurrentView();
                     }
                     break;
@@ -1355,6 +2059,12 @@
                         addToPartition(agentId, part, '新标签');
                     } else if (part === 'todos') {
                         addToPartition(agentId, part, { content: '新的待办事项', done: false });
+                    } else if (part === 'key_events') {
+                        addToPartition(agentId, part, { content: '新事件', keywords: [], emotions: [] });
+                    } else if (part === 'character_diary') {
+                        addToPartition(agentId, part, { date: '', content: '新日记' });
+                    } else if (part === 'emotion_flow') {
+                        addToPartition(agentId, part, { content: '新情感流转', affection: '' });
                     } else {
                         addToPartition(agentId, part, '新条目');
                     }
@@ -1377,6 +2087,10 @@
                         break;
                     }
                     manualSummarizeAll(agentId);
+                    break;
+                }
+                case 'fetch-models': {
+                    handleFetchModels();
                     break;
                 }
             }
@@ -1424,11 +2138,57 @@
             const key = el.dataset.setting;
             if (el.type === 'checkbox') {
                 setSetting(key, el.checked);
+            } else if (el.type === 'password' || el.type === 'text') {
+                // 文本类设置（API 地址/Key/模型名）
+                setSetting(key, el.value);
             } else if (el.dataset.value !== undefined) {
                 setSetting(key, parseInt(el.dataset.value, 10) || 0);
             } else {
                 setSetting(key, parseInt(el.value, 10) || 0);
             }
+        }
+    }
+
+    async function handleFetchModels() {
+        const statusEl = document.getElementById('ltm-model-status');
+        const selectEl = document.getElementById('ltm-external-model-select');
+        const inputEl = document.getElementById('ltm-external-model-input');
+        const setStatus = (msg, isErr = false) => {
+            if (statusEl) {
+                statusEl.style.display = 'block';
+                statusEl.style.color = isErr ? '#b23a2a' : '#5e7a3e';
+                statusEl.innerHTML = msg;
+            }
+        };
+
+        setStatus('<i class="fa-solid fa-spinner fa-spin"></i> 正在拉取模型列表……');
+
+        try {
+            const models = await fetchExternalModels();
+            if (!models || !models.length) {
+                setStatus('<i class="fa-solid fa-triangle-exclamation"></i> 未获取到模型，请检查 API 地址与 Key。', true);
+                toastr?.warning?.('记忆宫殿：未获取到模型列表');
+                return;
+            }
+
+            // 填充下拉框
+            if (selectEl) {
+                selectEl.innerHTML = '<option value="">— 选择模型 —</option>' + models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+                selectEl.style.display = 'block';
+                selectEl.onchange = () => {
+                    if (selectEl.value && inputEl) {
+                        inputEl.value = selectEl.value;
+                        setSetting('externalApiModel', selectEl.value);
+                    }
+                };
+            }
+
+            setStatus(`<i class="fa-solid fa-circle-check"></i> 共拉取到 ${models.length} 个模型，请在下拉框选择。`);
+            toastr?.success?.(`记忆宫殿：拉取到 ${models.length} 个模型`);
+        } catch (err) {
+            console.warn('[记忆宫殿] 拉取模型失败：', err);
+            setStatus(`<i class="fa-solid fa-triangle-exclamation"></i> 拉取失败：${err?.message || '请检查 API 地址与 Key'}。`, true);
+            toastr?.error?.('记忆宫殿：拉取模型失败，' + (err?.message || '请检查 API 地址与 Key'));
         }
     }
 
@@ -1441,7 +2201,8 @@
         const part = el.dataset.part;
         const idx = parseInt(el.dataset.idx, 10);
         const field = el.dataset.field || null;
-        const npcName = el.dataset.npc || null;
+        const npc = el.dataset.npc || null;
+        const npcName = (currentNpc && npc === currentNpc) ? npc : (npc || null);
 
         const mem = npcName ? getNpcMemory(agentId, npcName) : getCharacterMemory(agentId);
         const arr = mem?.[part];
@@ -1452,6 +2213,19 @@
         if (field === 'name' || field === 'significance') {
             let item = arr[idx];
             if (typeof item === 'string') item = { name: item, significance: '' };
+            item[field] = newText;
+            updatePartitionItem(agentId, part, idx, item, npcName);
+        } else if (field === 'keywords' || field === 'emotions') {
+            // 逗号/顿号分隔的词 → 数组
+            let item = arr[idx];
+            if (typeof item === 'string') item = { content: item, keywords: [], emotions: [] };
+            item[field] = newText
+                ? newText.split(/[,，、]/).map((s) => s.trim()).filter(Boolean)
+                : [];
+            updatePartitionItem(agentId, part, idx, item, npcName);
+        } else if (field === 'date' || field === 'content' || field === 'affection' || field === 'relationship') {
+            let item = arr[idx];
+            if (typeof item === 'string') item = { content: item, date: '', affection: '', relationship: '' };
             item[field] = newText;
             updatePartitionItem(agentId, part, idx, item, npcName);
         } else if (typeof arr[idx] === 'string' && field === null) {
@@ -1539,7 +2313,7 @@
         <div class="ltm-settings">
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b>长期记忆插件</b>
+                    <b>记忆宫殿插件</b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
                 </div>
                 <div class="inline-drawer-content">
@@ -1608,7 +2382,7 @@
             eventSource.on(event_types.CHAT_CHANGED, renderCurrentView);
         }
 
-        console.log('[LTM] 长期记忆插件已加载（纯前端方案，服务端持久化）');
+        console.log('[记忆宫殿] 插件已加载（纯前端方案，服务端持久化）');
     }
 
     // ---------------------------------------------------------------------
@@ -1650,6 +2424,16 @@
         resetPrompt,
         processUserMessage,
         manualSummarizeAll,
+        doFullSummarize,
+        summarizeInBatches,
+        applySummaryData,
+        retrieveRelevantEvents,
+        buildInjectionPrompt,
+        retrieveRelevantDiary,
+        generateViaExternalApi,
+        fetchExternalModels,
+        hideFloorsExceptRecent,
+        markFlowInjectionPending,
         refreshPanel: renderCurrentView,
     };
 })(typeof window !== 'undefined' ? window : globalThis);
