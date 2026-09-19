@@ -1,5 +1,5 @@
 // =============================================================
-// index.js — 记忆宫殿 Memory Palace 插件（纯前端 SillyTavern 插件，单文件版）
+// index.js — 记忆宫殿插件（纯前端 SillyTavern 插件，单文件版）
 //
 // 架构：纯前端方案，无外部后端、无 mem0ai 依赖。
 // 数据通过 getContext().extensionSettings 持久化到服务端 data/ 目录，
@@ -1416,7 +1416,7 @@
         <div id="ltm-panel-overlay"></div>
         <aside id="ltm-panel-drawer" style="background-color:#f6f1e6;background-image:linear-gradient(160deg,#f6f1e6,#efe6d3);">
             <div class="ltm-drawer-head">
-                <div class="ltm-drawer-logo"><i class="fa-solid fa-landmark"></i> 记忆宫殿 · MEMORY PALACE</div>
+                <div class="ltm-drawer-logo"><i class="fa-solid fa-landmark"></i> 记忆宫殿 <span style="font-size:0.7em;font-weight:400;opacity:.75;">v2.2.0</span></div>
                 <button class="ltm-drawer-close" id="ltm-panel-close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="ltm-nav-tabs" id="ltm-nav-tabs">
