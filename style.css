@@ -1,5 +1,5 @@
 /* =============================================================
-   长期记忆插件 — 档案风美化样式（暗红 / 米白 / 毛玻璃）
+   记忆宫殿插件 — 档案风美化样式（暗红 / 米白 / 毛玻璃）
    参考 Ao3 配色的档案系统，适配 SillyTavern 深色/浅色主题，
    并针对手机端与电脑端做响应式排布。
    ============================================================= */
@@ -108,6 +108,8 @@
     max-width: 92vw;
     height: 100vh;
     height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
     z-index: 30001;
     background-color: #f6f1e6;
     background-image:
@@ -245,8 +247,11 @@ body.dark #ltm-panel-drawer,
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 16px;
+    padding: 16px 16px 80px;
     -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    -webkit-overflow-scroll-behavior: contain;
+    touch-action: pan-y;
 }
 
 .ltm-view {
@@ -790,15 +795,36 @@ body.dark #ltm-panel-drawer,
     border-color: #5e1010;
 }
 
+/* ===== 独立 API 模型拉取行 ===== */
+.ltm-model-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.ltm-model-row .ltm-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.ltm-model-row .ltm-btn {
+    flex-shrink: 0;
+}
+
 /* ===== 响应式：手机端 ===== */
 @media (max-width: 640px) {
     #ltm-panel-drawer {
         width: 100vw;
         max-width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        max-height: 100vh;
+        max-height: 100dvh;
     }
 
     .ltm-drawer-body {
         padding: 12px;
+        padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
     }
 
     .ltm-nav-tabs {
@@ -806,6 +832,7 @@ body.dark #ltm-panel-drawer,
         gap: 4px;
         overflow-x: auto;
         flex-wrap: nowrap;
+        -webkit-overflow-scrolling: touch;
     }
 
     .ltm-nav-tab {
