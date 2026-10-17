@@ -140,6 +140,7 @@
 {
   "key_events": [
     {
+      "character_name": "这条事件发生/归属的主要角色名字（必填，见下方【角色归属铁律】）",
       "date": "这条事件发生的具体年月日（格式 YYYY.M.D，如 2036.4.19；若对话中无明确年月日，则根据上下文推断最近的日期）",
       "content": "发生的关键事件描述（一句话，具体、完整）",
       "keywords": ["事件锚点关键词1", "关键词2", "关键词3"],
@@ -148,21 +149,23 @@
   ],
   "diary": [
     {
+      "character_name": "这条日记属于哪个主要角色的内心记录（必填）",
       "date": "具体日期（如 4.19 或 4月19日；若对话中无明确日期则用相对时间如「第二天」）",
-      "content": "以「{{char}}」口吻、不带个人情绪地流水账式记录这一两天发生的事，一两句话"
+      "content": "以该角色口吻、不带个人情绪地流水账式记录这一两天发生的事，一两句话"
     }
   ],
   "emotion_flow": [
     {
+      "character_name": "这条情感流转属于哪个主要角色（必填）",
       "date": "这一阶段覆盖的具体日期区间，格式为「YYYY.M.D-YYYY.M.D」（如 2036.4.1-2036.4.19；若对话中无明确年月日，则用相对时间区间如「第一天-第三天」）",
-      "content": "这一阶段「{{char}}」对 user 的情感变化总结（因为哪些事、态度有了什么变化、现在对 user 的看法）",
+      "content": "这一阶段该角色对 user 的情感变化总结（因为哪些事、态度有了什么变化、现在对 user 的看法）",
       "affection": "当前好感度估值（如 10%-20%，或从 25% 降至 18% 之类的变化描述）",
-      "relationship": "「{{char}}」认为自己现在和 user 是什么关系（如：恋人、挚友、师徒、宿敌、陌生人等，一句话概括）"
+      "relationship": "该角色认为自己现在和 user 是什么关系（如：恋人、挚友、师徒、宿敌、陌生人等，一句话概括）"
     }
   ],
-  "special_occasions": ["提到的纪念日/生日/重要日期"],
-  "todos": [{"content": "约定/承诺/待办内容", "done": false}],
-  "important_items": [{"name": "物品名", "significance": "意义"}],
+  "special_occasions": [{"character_name": "这个纪念日/节日属于哪个角色（必填）", "date": "纪念日/生日/重要日期"}],
+  "todos": [{"character_name": "这条约定/承诺涉及哪个主要角色（必填）", "content": "约定/承诺/待办内容", "done": false}],
+  "important_items": [{"character_name": "这个物品属于/关联哪个主要角色（必填）", "name": "物品名", "significance": "意义"}],
   "main_characters": [
     {"name": "主要角色名", "role": "该角色的身份/与「{{char}}」或用户的关系", "evidence": "该角色在正文中高频出现、深度参与剧情的依据（一句话）"}
   ],
@@ -179,6 +182,11 @@
 5. emotion_flow 是这一阶段的情感变化总结，必须包含具体日期区间 date、好感度百分比 affection，以及 relationship（char 认为自己现在和 user 的关系）。
 6. 【主要角色判定铁律】main_characters 是「除当前角色卡 {{char}} 之外」、在对话正文中真正反复出现、高频互动、深度参与剧情的重要角色实体。绝不能机械地把「角色卡名字/标题」当成主要角色——角色卡名字往往只是一个标题或代号，必须以正文中实际活跃的实体为准。判断依据：该角色在正文中被提及或互动的次数多、有持续戏份、推动剧情、与 {{char}}/用户有实质互动。只有达到「深度参与」程度的才列入 main_characters；偶尔露面的路人、一次性出场角色不要列入。
 7. 【防止重复建档】凡是已经列入 main_characters 的角色，严禁再在 npc 里重复输出。npc 只输出真正的配角、路人、一次性出场角色。
+8. 【角色归属铁律——至关重要】key_events、diary、emotion_flow、special_occasions、todos、important_items 里的每一条记录，都必须带上 character_name 字段，准确标注这条记录属于哪个角色：
+   - 如果内容是「{{char}}」（当前角色卡）自身的事 → character_name 填「{{char}}」。
+   - 如果内容是某个已列入 main_characters 的角色的独立经历/内心/物品 → character_name 填那个角色的准确名字。
+   - 严禁把所有内容都默认归到「{{char}}」名下！必须逐条判断这条记忆到底是谁的经历、谁的情感、谁的物品、谁的约定。多个主要角色的数据必须分别标注、各自独立，绝不允许把 2 号角色的剧情混进 1 号角色。
+   - character_name 的名字必须与 main_characters 里（或「{{char}}」）的名字完全一致，方便精确匹配。
 8. todos 里，对话中已经明确「做完、完成、兑现、取消」的约定/承诺，done 必须填 true；只有仍未完成的才填 false。同一个约定若在多段对话里反复出现，只输出一次，且按最新状态判断 done。
 9. important_items 中，同一个物品（名称一致）只能出现一次，不要因为多次提及就重复输出；只有在出现真正重要的物品时才填写，没有就输出空数组。
 10. 没有内容的分区输出空数组 []，严禁虚构、推测、补充不存在的信息。
@@ -1363,12 +1371,13 @@
 
         if (Array.isArray(data.emotional_tags)) addToPartition(agentId, 'emotional_tags', data.emotional_tags);
         if (Array.isArray(data.key_events)) {
-            // 兼容字符串或对象两种格式
+            // 兼容字符串或对象两种格式；对象若带 character_name 则精确路由到归属角色
             for (const ev of data.key_events) {
                 if (typeof ev === 'string') {
-                    addToPartition(agentId, 'key_events', { content: ev, keywords: [], emotions: [] });
+                    routeAddIfNew(agentId, 'key_events', { content: ev, keywords: [], emotions: [] });
                 } else if (ev && typeof ev === 'object') {
-                    addToPartition(agentId, 'key_events', {
+                    routeAddIfNew(agentId, 'key_events', {
+                        character_name: extractOwnerName(ev),
                         content: ev.content || '',
                         keywords: Array.isArray(ev.keywords) ? ev.keywords : [],
                         emotions: Array.isArray(ev.emotions) ? ev.emotions : [],
@@ -1376,19 +1385,35 @@
                 }
             }
         }
-        if (Array.isArray(data.special_occasions)) addToPartition(agentId, 'special_occasions', data.special_occasions);
+        if (Array.isArray(data.special_occasions)) {
+            for (const oc of data.special_occasions) {
+                if (typeof oc === 'string') {
+                    routeAddIfNew(agentId, 'special_occasions', oc);
+                } else if (oc && typeof oc === 'object') {
+                    const ocName = extractOwnerName(oc);
+                    const ocVal = oc.date || oc.content || oc.name || '';
+                    if (ocVal) routeAddIfNew(agentId, 'special_occasions', { character_name: ocName, content: String(ocVal) });
+                }
+            }
+        }
         if (data.character_diary) {
             if (Array.isArray(data.character_diary)) {
                 for (const d of data.character_diary) {
-                    addToPartition(agentId, 'character_diary', typeof d === 'string' ? { date: '', content: d } : d);
+                    routeAddIfNew(agentId, 'character_diary', typeof d === 'string' ? { date: '', content: d } : d);
                 }
             } else {
-                addToPartition(agentId, 'character_diary', { date: '', content: data.character_diary });
+                routeAddIfNew(agentId, 'character_diary', { date: '', content: data.character_diary });
             }
         }
-        if (Array.isArray(data.emotion_flow)) addToPartition(agentId, 'emotion_flow', data.emotion_flow);
-        if (Array.isArray(data.todos)) addToPartition(agentId, 'todos', data.todos);
-        if (Array.isArray(data.important_items)) addToPartition(agentId, 'important_items', data.important_items);
+        if (Array.isArray(data.emotion_flow)) {
+            for (const f of data.emotion_flow) routeAddIfNew(agentId, 'emotion_flow', f);
+        }
+        if (Array.isArray(data.todos)) {
+            for (const t of data.todos) routeAddIfNew(agentId, 'todos', t);
+        }
+        if (Array.isArray(data.important_items)) {
+            for (const it of data.important_items) routeAddIfNew(agentId, 'important_items', it);
+        }
         if (Array.isArray(data.npc)) {
             const chat = getSTContext()?.chat || [];
             for (const name of data.npc) {
@@ -1430,63 +1455,98 @@
         addToPartition(agentId, partition, item, npcName, promotedName);
     }
 
+    // =====================================================================
+    // 数据精确路由分发器（Event & Summary Router）——多主角物理隔离的核心
+    // =====================================================================
+    // 大模型总结/提取返回的每条记录都带 character_name 标注（见提示词「角色归属铁律」）。
+    // 本模块根据 character_name 精确路由到对应主要角色的独立存储节点：
+    //   - 名字命中已知主要角色（原主角/已升级角色）→ 写入该角色的 characters[name]
+    //   - 名字匹配不到任何已知主要角色 → 自动为其创建新的主要角色节点（平等、独立）
+    // 严禁「默认归入角色卡」的兜底逻辑：匹配失败绝不塞给 1 号角色。
+
+    // 从一条记录里提取角色归属名（兼容 character_name / character / char / owner 等字段）
+    function extractOwnerName(item) {
+        if (!item || typeof item !== 'object') return null;
+        const raw = item.character_name ?? item.character ?? item.char ?? item.owner ?? item.role_name ?? null;
+        if (typeof raw !== 'string') return null;
+        const name = raw.trim();
+        return name || null;
+    }
+
+    // 判断某个名字是否为「当前角色卡 / 群聊成员」（即原主角，非升级角色）
+    function isSelfCharacterName(name) {
+        if (!name) return false;
+        return getMainCharacterNameList().some(
+            (n) => n && n.toLowerCase() === String(name).toLowerCase()
+        );
+    }
+
+    // 精确路由：返回该角色名对应的记忆对象（始终非 null）。
+    // 若匹配不到任何已知主要角色，自动创建新的主要角色节点（绝不归入角色卡）。
+    function resolveCharacterTarget(agentId, characterName) {
+        const container = ensureContainer(agentId);
+        const name = String(characterName || '').trim();
+        if (!name) return null;
+
+        // 1) 已是登记在册的主要角色（含原主角、群聊成员、升级角色）→ 精确命中
+        if (container.characters?.[name]) return container.characters[name];
+
+        // 2) 名字大小写/空白差异兜底：模糊匹配（完全独立存储，仅用于对齐历史命名）
+        for (const existingName in container.characters) {
+            if (existingName.toLowerCase() === name.toLowerCase()) {
+                return container.characters[existingName];
+            }
+        }
+
+        // 3) 匹配不到任何已知主要角色 → 自动创建新的主要角色节点（平等、独立）
+        //    这是「严禁默认归入角色卡」的关键：新实体独立建档，不塞给 1 号角色。
+        const newMem = createEmptyMemory();
+        newMem.meta.name = name;
+        newMem.meta.is_promoted = !isSelfCharacterName(name);
+        container.characters[name] = newMem;
+        saveSettings();
+        log(`[记忆宫殿] 路由：为「${name}」创建新的主要角色独立节点`);
+        return newMem;
+    }
+
+    // 把一条带 character_name 的记录写入其归属角色的指定分区（带去重）。
+    // 参数 item 里的 character_name 会被剥离，避免污染存储数据。
+    function routeAddIfNew(agentId, partition, item, fallbackName = null) {
+        if (!item || typeof item !== 'object') {
+            // 非对象（字符串等）：无角色标注，用 fallback（默认原主角）
+            addIfNew(agentId, partition, item, null, fallbackName);
+            return;
+        }
+        const ownerName = extractOwnerName(item) || fallbackName;
+        if (!ownerName) {
+            // 无任何角色标注：归入原主角（唯一合理的兜底——模型完全没标注时保持旧行为）
+            addIfNew(agentId, partition, item, null, null);
+            return;
+        }
+
+        // 剥离 character_name 等路由元字段，得到纯数据
+        const clean = { ...item };
+        delete clean.character_name;
+        delete clean.character;
+        delete clean.char;
+        delete clean.owner;
+        delete clean.role_name;
+
+        // 精确路由：无论归属原主角还是其他主要角色，都写入 characters[ownerName]
+        // （resolveCharacterTarget 保证节点一定存在，不存在则自动创建独立节点）。
+        const mem = resolveCharacterTarget(agentId, ownerName);
+        if (mem) addIfNew(agentId, partition, clean, null, ownerName);
+    }
+
     function applySummaryData(agentId, data) {
         if (!data || typeof data !== 'object') return false;
 
-        // 关键事件（对象结构，带 date + keywords + emotions）
-        if (Array.isArray(data.key_events)) {
-            for (const ev of data.key_events) {
-                if (typeof ev === 'string') {
-                    addIfNew(agentId, 'key_events', { date: '', content: ev, keywords: [], emotions: [] });
-                } else if (ev && typeof ev === 'object' && ev.content) {
-                    addIfNew(agentId, 'key_events', {
-                        date: ev.date || '',
-                        content: String(ev.content),
-                        keywords: Array.isArray(ev.keywords) ? ev.keywords.map(String) : [],
-                        emotions: Array.isArray(ev.emotions) ? ev.emotions.map(String) : [],
-                    });
-                }
-            }
-        }
-
-        // 日记（带日期流水账）
-        if (Array.isArray(data.diary)) {
-            for (const d of data.diary) {
-                if (typeof d === 'string') {
-                    addIfNew(agentId, 'character_diary', { date: '', content: d });
-                } else if (d && typeof d === 'object') {
-                    addIfNew(agentId, 'character_diary', {
-                        date: d.date || '',
-                        content: d.content || '',
-                    });
-                }
-            }
-        }
-
-        // 情感流转（含好感度 + 关系定位 + 具体日期区间）
-        if (Array.isArray(data.emotion_flow)) {
-            for (const f of data.emotion_flow) {
-                if (typeof f === 'string') {
-                    addIfNew(agentId, 'emotion_flow', { content: f, affection: '', relationship: '', date: '' });
-                } else if (f && typeof f === 'object') {
-                    addIfNew(agentId, 'emotion_flow', {
-                        content: f.content || '',
-                        affection: f.affection || '',
-                        relationship: f.relationship || '',
-                        date: f.date || '',
-                    });
-                }
-            }
-        }
-
-        if (Array.isArray(data.special_occasions)) addToPartition(agentId, 'special_occasions', data.special_occasions);
-        // 待办去重 + 完成态合并（避免跨楼层重复、已完成被记成未完成）
-        if (Array.isArray(data.todos)) mergeTodos(agentId, data.todos);
-        // 重要物品去重（避免同一物品被误判为不同物品重复记录）
-        if (Array.isArray(data.important_items)) mergeImportantItems(agentId, data.important_items);
-
-        // 主要角色动态识别（LLM 按正文高频互动输出）：把深度参与剧情的实体登记为主要角色，
-        // 彻底摆脱「角色卡标题」误区。已在集合中的实体保持不变（防重复、防降级）。
+        // =====================================================================
+        // 第一步：主要角色登记（优先于分区数据，保证角色节点先就位）
+        // =====================================================================
+        // 把 LLM 按正文高频互动识别出的主要角色先登记进 characters 集合（含身份、
+        // evidence），彻底摆脱「角色卡标题」误区。已在集合中的实体不重复建档，
+        // 但会补写身份信息与 evidence（用 addIfNew 去重，防止重试重复写入）。
         if (Array.isArray(data.main_characters)) {
             const mainNames = new Set(getMainCharacterNameList());
             for (const mc of data.main_characters) {
@@ -1501,18 +1561,20 @@
                 if (!mcName) continue;
                 // 跳过原主角自己（角色卡名 / 群聊成员名）
                 if (mainNames.has(mcName)) continue;
-                // 已是主要角色 → 跳过（防重复建档）
-                if (getMainCharacterMemory(agentId, mcName)) continue;
 
                 // 若该实体当前在 NPC 档里 → 升级为主要角色（搬运，不丢失既有记忆）
                 const npcMem = getNpcMemory(agentId, mcName);
                 if (npcMem) {
                     promoteNpcToMain(agentId, mcName);
                     log(`[记忆宫殿] 「${mcName}」由 NPC 升级为主要角色`);
-                } else {
+                } else if (!getMainCharacterMemory(agentId, mcName)) {
+                    // 尚不存在 → 新建独立主要角色档案
+                    ensurePromotedMemory(agentId, mcName, identity);
+                } else if (identity) {
+                    // 已存在 → 补充身份信息（不覆盖已有）
                     ensurePromotedMemory(agentId, mcName, identity);
                 }
-                // evidence 作为该角色的关键事件留存（去重）
+                // evidence 作为该角色的关键事件留存（去重，防止重试重复写入）
                 if (evidence) {
                     addIfNew(agentId, 'key_events', {
                         date: '',
@@ -1520,6 +1582,116 @@
                         keywords: [mcName, ...(identity ? [identity] : [])],
                         emotions: [],
                     }, null, mcName);
+                }
+            }
+        }
+
+        // =====================================================================
+        // 第二步：多主角精确路由分发：每条带 character_name 的记录，路由到其归属角色
+        // 的独立存储节点。匹配不到已知主要角色 → 自动创建新节点（绝不塞给角色卡）。
+        // =====================================================================
+
+        // 关键事件（对象结构，带 date + keywords + emotions + character_name）
+        if (Array.isArray(data.key_events)) {
+            for (const ev of data.key_events) {
+                if (typeof ev === 'string') {
+                    routeAddIfNew(agentId, 'key_events', { date: '', content: ev, keywords: [], emotions: [] });
+                } else if (ev && typeof ev === 'object' && ev.content) {
+                    routeAddIfNew(agentId, 'key_events', {
+                        character_name: extractOwnerName(ev),
+                        date: ev.date || '',
+                        content: String(ev.content),
+                        keywords: Array.isArray(ev.keywords) ? ev.keywords.map(String) : [],
+                        emotions: Array.isArray(ev.emotions) ? ev.emotions.map(String) : [],
+                    });
+                }
+            }
+        }
+
+        // 日记（带日期流水账 + character_name）
+        if (Array.isArray(data.diary)) {
+            for (const d of data.diary) {
+                if (typeof d === 'string') {
+                    routeAddIfNew(agentId, 'character_diary', { date: '', content: d });
+                } else if (d && typeof d === 'object') {
+                    routeAddIfNew(agentId, 'character_diary', {
+                        character_name: extractOwnerName(d),
+                        date: d.date || '',
+                        content: d.content || '',
+                    });
+                }
+            }
+        }
+
+        // 情感流转（含好感度 + 关系定位 + 具体日期区间 + character_name）
+        if (Array.isArray(data.emotion_flow)) {
+            for (const f of data.emotion_flow) {
+                if (typeof f === 'string') {
+                    routeAddIfNew(agentId, 'emotion_flow', { content: f, affection: '', relationship: '', date: '' });
+                } else if (f && typeof f === 'object') {
+                    routeAddIfNew(agentId, 'emotion_flow', {
+                        character_name: extractOwnerName(f),
+                        content: f.content || '',
+                        affection: f.affection || '',
+                        relationship: f.relationship || '',
+                        date: f.date || '',
+                    });
+                }
+            }
+        }
+
+        // 纪念日（新结构带 character_name；兼容旧字符串数组）
+        if (Array.isArray(data.special_occasions)) {
+            for (const oc of data.special_occasions) {
+                if (typeof oc === 'string') {
+                    routeAddIfNew(agentId, 'special_occasions', oc);
+                } else if (oc && typeof oc === 'object') {
+                    const ocName = extractOwnerName(oc);
+                    const ocVal = oc.date || oc.content || oc.name || '';
+                    if (ocVal) {
+                        routeAddIfNew(agentId, 'special_occasions', {
+                            character_name: ocName,
+                            content: String(ocVal),
+                        });
+                    }
+                }
+            }
+        }
+        // 待办去重 + 完成态合并（带 character_name 精确路由）
+        if (Array.isArray(data.todos)) {
+            for (const t of data.todos) {
+                if (typeof t === 'string') {
+                    routeAddIfNew(agentId, 'todos', t);
+                } else if (t && typeof t === 'object') {
+                    const ownerName = extractOwnerName(t);
+                    const clean = { content: t.content || '', done: !!t.done };
+                    if (ownerName) {
+                        const mem = resolveCharacterTarget(agentId, ownerName);
+                        if (mem) {
+                            mergeTodos(agentId, [clean], null, ownerName);
+                        }
+                    } else {
+                        mergeTodos(agentId, [clean]);
+                    }
+                }
+            }
+        }
+        // 重要物品去重（带 character_name 精确路由）
+        if (Array.isArray(data.important_items)) {
+            for (const it of data.important_items) {
+                if (typeof it === 'string') {
+                    routeAddIfNew(agentId, 'important_items', it);
+                } else if (it && typeof it === 'object') {
+                    const ownerName = extractOwnerName(it);
+                    const clean = { name: it.name || '', significance: it.significance || '' };
+                    if (ownerName) {
+                        const mem = resolveCharacterTarget(agentId, ownerName);
+                        if (mem) {
+                            mergeImportantItems(agentId, [clean], null, ownerName);
+                        }
+                    } else {
+                        mergeImportantItems(agentId, [clean]);
+                    }
                 }
             }
         }
@@ -2351,7 +2523,7 @@
         <div id="ltm-panel-overlay"></div>
         <aside id="ltm-panel-drawer">
             <div class="ltm-drawer-head">
-                <div class="ltm-drawer-logo"><i class="fa-solid fa-landmark"></i> 记忆宫殿 <span style="font-size:0.7em;font-weight:400;opacity:.75;">v3.0.0</span></div>
+                <div class="ltm-drawer-logo"><i class="fa-solid fa-landmark"></i> 记忆宫殿 <span style="font-size:0.7em;font-weight:400;opacity:.75;">v3.1.0</span></div>
                 <button class="ltm-drawer-close" id="ltm-panel-close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="ltm-nav-tabs" id="ltm-nav-tabs">
@@ -3677,6 +3849,10 @@
         ensureContainer,
         getMainCharacterNameList,
         getNpcMemory,
+        resolveCharacterTarget,
+        routeAddIfNew,
+        extractOwnerName,
+        isSelfCharacterName,
         getAllPrompts,
         savePrompt,
         resetPrompt,
